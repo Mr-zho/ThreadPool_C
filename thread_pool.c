@@ -80,9 +80,11 @@ void * thread_func(void *arg)
         while (tpool->task_size == 0 && !tpool->shutdown)
         {
             pthread_cond_wait(&(tpool->mutex_cond_ptoc), &(tpool->mutex_lock));
+
+            /* todo... */
         }
 
-        /* */
+        /* 强制关闭线程 回收资源 */
         if (tpool->shutdown)
         {
             printf("Workers'thread ID 0x%x is exiting\n", (unsigned int)pthread_self());
@@ -245,9 +247,15 @@ int addTask(thread_pool *tpool, void *(*func)(void *), void *arg)
 
     int ret = 0;    
     pthread_mutex_lock(&(tpool->mutex_lock));
-    while(tpool->task_size == TASK_NUM)
+    while(tpool->task_size == TASK_NUM && !(tpool->shutdown))
     {
         pthread_cond_wait(&(tpool->mutex_cond_ctop),&(tpool->mutex_lock));
+    }
+
+    if (tpool->shutdown)
+    {
+        pthread_mutex_unlock(&(tpool->mutex_lock));
+        return ret;
     }
 
     t_task *taskNode = (t_task *)malloc(sizeof(t_task) * 1);
@@ -269,7 +277,6 @@ int addTask(thread_pool *tpool, void *(*func)(void *), void *arg)
 
     return ret;
 }
-
 
 /* 销毁线程池 */
 int threadPool_Destory(thread_pool *pool)
