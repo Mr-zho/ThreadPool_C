@@ -14,8 +14,6 @@
     if (!ptr)          \
         return NULL;
 
-
-
 /* 任务队列结点 */
 typedef struct t_task
 {
@@ -58,11 +56,21 @@ typedef enum STAT_CODE
 } STAT_CODE;
 
 /* 函数前置声明 */
-int threadPool_Init(thread_pool **pool, int threadNums,int min_thread_num,int max_thread_num);
-/* 线程池的资源回收 */
-int threadPool_ResourceFree(thread_pool *pool);
+
+/* 线程池的线程资源回收 */
+static int threadPool_ResourceFree(thread_pool *pool);
 /* 线程池的内存释放 */
-int threadPool_Free(thread_pool *pool);
+static int threadPool_Free(thread_pool *pool);
+/* 校验线程数的合法性 */
+static int checkThreadVaild(int *threadNums);
+/* 提供给外部的接口 */
+/* 初始化线程池 */
+int threadPool_Init(thread_pool **pool, int threadNums,int min_thread_num,int max_thread_num);
+/* 生产者- 添加任务 */
+threadPool_addTask(thread_pool *tpool, void *(*func)(void *), void *arg);
+/* 销毁线程池 */
+int threadPool_Destory(thread_pool *pool);
+
 
 
 /* 我是消费者 */
@@ -112,8 +120,8 @@ void * thread_func(void *arg)
     }
     pthread_exit(NULL);
 }
-
-int checkThreadVaild(int *threadNums)
+/* 校验线程数的合法性 */
+static int checkThreadVaild(int *threadNums)
 {
     int ret = 0;
     if (*threadNums > 10 || *threadNums <= 0)
@@ -162,8 +170,6 @@ void * manager_func(void *arg)
 }
 
 
-
-
 /* 
  * @brief: 初始化线程池
  * @param1:
@@ -172,7 +178,7 @@ void * manager_func(void *arg)
 int threadPool_Init(thread_pool **pool, int threadNums,int min_thread_num,int max_thread_num)
 {
     int ret = 0;
-    /* 校验合法性 */
+    
     checkThreadVaild(&threadNums);
 
     thread_pool * t_pool = (thread_pool *)malloc(sizeof(thread_pool) * 1);
@@ -207,9 +213,6 @@ int threadPool_Init(thread_pool **pool, int threadNums,int min_thread_num,int ma
     pthread_mutex_init(&(t_pool->mutex_lock), NULL);
     pthread_cond_init(&(t_pool->mutex_cond_ptoc),NULL);
     pthread_cond_init(&(t_pool->mutex_cond_ctop),NULL);
-    
-    
-    
 
     /* 使用单向链表实现任务队列 */
     t_pool->queue = (t_task *)malloc(sizeof(t_task) * 1);
@@ -239,8 +242,8 @@ int threadPool_Init(thread_pool **pool, int threadNums,int min_thread_num,int ma
     return ret;
 }
 
-/* 生产者 */
-int addTask(thread_pool *tpool, void *(*func)(void *), void *arg)
+/* 生产者- 添加任务 */
+int threadPool_addTask(thread_pool *tpool, void *(*func)(void *), void *arg)
 {
     /* 判断参数的合法性 */
     // CHECK_PTR(tpool);
@@ -287,21 +290,23 @@ int threadPool_Destory(thread_pool *pool)
     return ret;
 }
 
-/* 线程池的资源回收 */
-int threadPool_ResourceFree(thread_pool *pool)
+/* 
+ * @brief: 线程池的资源回收 
+ * @param: 
+ */
+static int threadPool_ResourceFree(thread_pool *pool)
 {
     int ret = 0;
     pool->shutdown = 1;
 
     /* 先销毁管理者线程 */
     pthread_join(pool->manager_thread, NULL);
-
-
     for (int idx = 0; idx < pool->current_thread_num; idx++)
     {
         pthread_cond_broadcast(&(pool->mutex_cond_ptoc));
     }
 
+    /* 回收工作线程 */
     for (int idx = 0; idx < pool->current_thread_num; idx++)
     {
         pthread_join(pool->threadId[idx], NULL);
@@ -310,8 +315,11 @@ int threadPool_ResourceFree(thread_pool *pool)
     return ret;
 }
 
-/* */
-int threadPool_Free(thread_pool *pool)
+/* 
+ * @brief:  线程池的内存释放 
+ * @param1: 
+ */
+static int threadPool_Free(thread_pool *pool)
 {   
     int ret = 0;
 
@@ -361,10 +369,9 @@ int main()
     threadPool_Init(&t_pool, THREAD_NUM,5,20);
     for (int idx = 0; idx < COUNT_NUM; idx++)
     {
-        addTask(t_pool, printf_func, NULL);
+        threadPool_addTask(t_pool, printf_func, NULL);
     }
     threadPool_Destory(t_pool);
-
 
     return 0;
 }
