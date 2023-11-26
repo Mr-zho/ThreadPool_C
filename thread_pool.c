@@ -67,7 +67,7 @@ static int checkThreadVaild(int *threadNums);
 /* 初始化线程池 */
 int threadPool_Init(thread_pool **pool, int threadNums,int min_thread_num,int max_thread_num);
 /* 生产者- 添加任务 */
-threadPool_addTask(thread_pool *tpool, void *(*func)(void *), void *arg);
+int threadPool_addTask(thread_pool *tpool, void *(*func)(void *), void *arg);
 /* 销毁线程池 */
 int threadPool_Destory(thread_pool *pool);
 
@@ -113,7 +113,7 @@ void * thread_func(void *arg)
 
         /* 执行回调函数 */
         task->task_callback(task->arg);
-
+	printf("threadId %ld get task to handle\n", pthread_self());
         pthread_mutex_lock(&(tpool->mutex_busythrcnt_lock));
         tpool->busy_thread_num--;
         pthread_mutex_unlock(&(tpool->mutex_busythrcnt_lock));
@@ -141,6 +141,7 @@ void * manager_func(void *arg)
         sleep(5);
         pthread_mutex_lock(&t_pool->mutex_lock);
         
+	/* 忙碌的线程数 */
         int busy_thread_num = t_pool->busy_thread_num;
         int task_num = t_pool->task_size;
         int current_thread_num = t_pool->current_thread_num;
@@ -161,6 +162,7 @@ void * manager_func(void *arg)
         }
 
         /* 减线程 */
+
         // if(busy_thread_num > task_num * 2 && current_thread_num > min_thread_num)
         // {
         //     int dl_thread_num = 
