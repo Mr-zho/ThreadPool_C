@@ -128,7 +128,7 @@ void * thread_func(void *arg)
 
         /* 执行回调函数 */
         task->task_callback(task->arg);
-
+	printf("threadId %ld get task to handle\n", pthread_self());
         pthread_mutex_lock(&(tpool->mutex_busythrcnt_lock));
         tpool->busy_thread_num--;
         pthread_mutex_unlock(&(tpool->mutex_busythrcnt_lock));
@@ -156,6 +156,7 @@ void * manager_func(void *arg)
         sleep(5);
         pthread_mutex_lock(&t_pool->mutex_lock);
         
+	/* 忙碌的线程数 */
         int busy_thread_num = t_pool->busy_thread_num;
         int task_num = t_pool->task_size;
         int current_live_threadnum = t_pool->current_live_threadnum;
@@ -176,10 +177,6 @@ void * manager_func(void *arg)
         }
 
         /* 减线程 */
-        // if(busy_thread_num > task_num * 2 && current_live_threadnum > min_thread_num)
-        // {
-        //     int dl_thread_num = 
-        // }
     }
     
 }
