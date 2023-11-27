@@ -4,11 +4,18 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/types.h>
-
+#include <signal.h>
+// #include <errno-base.h>
 
 #define THREAD_NUM      5
 #define TASK_NUM        10
 #define COUNT_NUM       20 
+
+#define MIN_THREAD_NUM  3
+#define MAX_THREAD_NUM  20
+
+
+#define CHECK_TIME_INTERVAL 5
 
 #define CHECK_PTR(ptr) \
     if (!ptr)          \
@@ -82,8 +89,8 @@ void * thread_func(void *arg)
     /* 处理任务 */
     thread_pool *tpool = (thread_pool *)arg;
     
-    t_task *task = (t_task *)malloc(sizeof(t_task) * 1);
-    memset(task, 0, sizeof(t_task));
+    /* 任务 : 获取任务队列的节点 */
+    t_task *task = NULL;
 
     while (1)
     {
@@ -92,9 +99,7 @@ void * thread_func(void *arg)
         {
             pthread_cond_wait(&(tpool->mutex_cond_ptoc), &(tpool->mutex_lock));
 
-            /* todo... */
-
-            /* 清楚指定数量的空闲线程(没有正在处理任务的线程切存活的)，如果要结束的线程个数大于0, 结束线程 */
+            /* 清除指定数量的空闲线程(没有正在处理任务的线程且存活的)，如果要结束的线程个数大于0, 结束线程 */
             if (tpool->need_exit_threadnum > 0)
             {
                 printf("consume thread id:%ld is exiting\n", pthread_self());
@@ -115,9 +120,16 @@ void * thread_func(void *arg)
             pthread_exit(NULL);
         }
 
+#if 0
         task = tpool->queueHead->next;      /* 这就是我的任务 */
         tpool->queueHead->next = task->next;
+#else   
+        task = tpool->queueHead->next;
+        tpool->queueHead->next = task->next;
+#endif  
+        /* 取完任务*/
         tpool->task_size--;
+
         printf("pthread_self get it id:%ld\n", pthread_self());
         pthread_mutex_unlock(&(tpool->mutex_lock));
         pthread_cond_broadcast(&(tpool->mutex_cond_ctop));
@@ -128,7 +140,10 @@ void * thread_func(void *arg)
 
         /* 执行回调函数 */
         task->task_callback(task->arg);
-	printf("threadId %ld get task to handle\n", pthread_self());
+        /* 需要释放刚刚取出来的节点 */
+        free(task);
+
+	    printf("threadId %ld get task to handle\n", pthread_self());
         pthread_mutex_lock(&(tpool->mutex_busythrcnt_lock));
         tpool->busy_thread_num--;
         pthread_mutex_unlock(&(tpool->mutex_busythrcnt_lock));
@@ -146,37 +161,83 @@ static int checkThreadVaild(int *threadNums)
     return ret;
 }
 
+static int isThreadAlive(pthread_t threadId)
+{   
+    int ret = 1;
+
+    /* 发信号0 ... todo... */
+    int kill_rc = pthread_kill(threadId, 0);
+    if (kill_rc == 3)
+    {
+        return 0;
+    }
+    return ret; 
+}
+
 /* 管理者线程 */
 void * manager_func(void *arg)
 {
     thread_pool * t_pool = (thread_pool*)arg;
 
     while(1)
-    {
-        sleep(5);
-        pthread_mutex_lock(&t_pool->mutex_lock);
-        
-	/* 忙碌的线程数 */
-        int busy_thread_num = t_pool->busy_thread_num;
+    {   
+        sleep(CHECK_TIME_INTERVAL);
+
+        pthread_mutex_lock(&(t_pool->mutex_lock));
         int task_num = t_pool->task_size;
         int current_live_threadnum = t_pool->current_live_threadnum;
-        int max_thread_num = t_pool->max_thread_num;
-        int min_thread_num = t_pool->min_thread_num;
+        pthread_mutex_unlock(&(t_pool->mutex_lock));
 
-        /* 增线程 */
-        if(busy_thread_num * 2 < task_num  && current_live_threadnum < max_thread_num)
+	    /* 忙碌的线程数 */
+        pthread_mutex_lock(&(t_pool->mutex_busythrcnt_lock));
+        int busy_thread_num = t_pool->busy_thread_num;
+        pthread_mutex_unlock(&(t_pool->mutex_busythrcnt_lock));
+
+
+        /* 增线程 : */
+        if((busy_thread_num << 1) < task_num) 
         {
-            int add_thread_num  = (max_thread_num - current_live_threadnum) / 2;
-            for(int idx = 0 ; idx < add_thread_num ; idx++)
+            pthread_mutex_lock(&(t_pool->mutex_lock));            
+            int need_add_thread_num = busy_thread_num >> 1;
+
+            for(int idx = 0 ;
+                    idx < need_add_thread_num && t_pool->current_live_threadnum < t_pool->max_thread_num; idx++)
             {
-                pthread_create(t_pool->threadId,NULL,thread_func,NULL);
-
-                t_pool->current_live_threadnum++;
+                if (!isThreadAlive(t_pool->threadId[idx]) || t_pool->threadId[idx] == 0)
+                {    
+                    pthread_create(&(t_pool->threadId[idx]), NULL, thread_func, NULL);
+                    t_pool->current_live_threadnum++;
+                }
             }
-
+            pthread_mutex_unlock(&(t_pool->mutex_lock));
         }
 
-        /* 减线程 */
+        /* 减线程 : 忙的线程数 * 2 < 存活线程数  && 
+        减少的线程数 */
+        if (current_live_threadnum > (busy_thread_num << 1) && current_live_threadnum > t_pool->min_thread_num)  
+        {
+            int need_del_thread_num = 0;
+            pthread_mutex_lock(&(t_pool->mutex_lock));
+            need_del_thread_num = busy_thread_num >> 1;
+            t_pool->need_exit_threadnum = need_del_thread_num;
+            pthread_mutex_unlock(&(t_pool->mutex_lock));
+
+#if 0
+            /* 这个广播会导致惊群 */
+            pthread_cond_broadcast(&(t_pool->mutex_cond_ptoc));
+#else
+            for (int idx = 0; idx < need_del_thread_num; idx++)
+            {
+                /* 只会有一个线程得到这个信号 */
+                pthread_cond_signal(&(t_pool->mutex_cond_ptoc));
+            }
+#endif
+
+
+            /* 广播让多余的空闲线程自杀 */
+        }
+
+
     }
     
 }
@@ -229,10 +290,13 @@ int threadPool_Init(thread_pool **pool, int threadNums,int min_thread_num,int ma
 
         }
         /* todo... */
+        /* 初始化锁资源和条件变量 */
         pthread_mutex_init(&(t_pool->mutex_lock), NULL);
-        pthread_cond_init(&(t_pool->mutex_cond_ptoc),NULL);
-        pthread_cond_init(&(t_pool->mutex_cond_ctop),NULL);
+        pthread_mutex_init(&(t_pool->mutex_busythrcnt_lock), NULL);
+        pthread_cond_init(&(t_pool->mutex_cond_ptoc), NULL);
+        pthread_cond_init(&(t_pool->mutex_cond_ctop), NULL);
 
+#if 1
         /* 使用单向链表实现任务队列 */
         t_pool->queueHead = (t_task *)malloc(sizeof(t_task) * 1);
         if (t_pool->queueHead == NULL)
@@ -240,6 +304,9 @@ int threadPool_Init(thread_pool **pool, int threadNums,int min_thread_num,int ma
             printf("malloc is error\n");
             return MALLOC_ERROR;
         }
+        /* 初始化的时候将尾指针指向虚拟头结点 */
+        t_pool->queueTail = t_pool->queueHead;
+#endif
 
 #if 0
         t_pool->queueHead->task_callback = NULL;
@@ -257,7 +324,7 @@ int threadPool_Init(thread_pool **pool, int threadNums,int min_thread_num,int ma
         t_pool->shutdown = 0;   
         
         /* 指针赋值 */
-        *pool = t_pool; 
+        *pool = t_pool;
     } while(0);  
     
     
@@ -289,12 +356,29 @@ int threadPool_addTask(thread_pool *tpool, void *(*func)(void *), void *arg)
     taskNode->next = NULL;
 
     /* 将任务节点尾插到任务队列中 */
+#if 0
+    /* 没有尾指针的情况. 时间复杂度是O(n) */
     t_task *travelTask = tpool->queueHead;
     while (travelTask->next != NULL)
     {
         travelTask = travelTask->next;
     }
     travelTask->next = taskNode;
+#else
+    /* 使用尾指针， 添加任务节点的是时间复杂度是O(1) */
+    if (tpool->task_size == 0)
+    {
+        /* 没有任务 */
+        tpool->queueHead->next = taskNode;
+        tpool->queueTail = taskNode;
+    }
+    else
+    {
+        /* 存在任务 */
+        taskNode->next = tpool->queueTail->next;
+        tpool->queueTail = taskNode;
+    }
+#endif
     /* 任务数量加一 */
     tpool->task_size++;
     pthread_mutex_unlock(&(tpool->mutex_lock));
@@ -351,15 +435,23 @@ static int threadPool_Free(thread_pool *pool)
         free(pool->threadId);
         pool->threadId = NULL;
     }
-
+    
     /* 释放队列 */
     while(pool->queueHead->next != NULL)
     {
         t_task *freeNode = pool->queueHead->next;
         pool->queueHead->next = freeNode->next;
         free(freeNode);
+        freeNode = NULL;
     }
-    free(pool->queueHead);
+    /* 队列的虚拟头节点 */
+    if (pool->queueHead)
+    {
+        free(pool->queueHead);
+        pool->queueHead = NULL;
+    }
+    /* 尾指针 没有分配内存直接置为NULL即可. */
+    pool->queueTail = NULL;
 
     /* 释放锁资源 和 条件变量 */
     pthread_mutex_destroy(&(pool->mutex_lock));
@@ -388,7 +480,7 @@ int main()
     thread_pool *t_pool = (thread_pool *)malloc(sizeof(thread_pool) * 1);
     memset(t_pool, 0, sizeof(t_pool));
 
-    threadPool_Init(&t_pool, THREAD_NUM,5,20);
+    threadPool_Init(&t_pool, THREAD_NUM, MIN_THREAD_NUM, MAX_THREAD_NUM);
     for (int idx = 0; idx < COUNT_NUM; idx++)
     {
         threadPool_addTask(t_pool, printf_func, NULL);
